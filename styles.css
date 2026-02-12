@@ -1,0 +1,6 @@
+.groq-copilot-ghost-text {
+  opacity: 0.4;
+  font-style: italic;
+  pointer-events: none;
+  color: var(--text-muted);
+}
