@@ -8,6 +8,7 @@ Type naturally and get ghost text suggestions that appear inline. Press **Tab** 
 
 - **Ghost text completion** — transparent suggestions appear at your cursor, like GitHub Copilot
 - **Context-aware** — reads text before and after cursor for coherent continuations
+- **Insight-oriented** — can surface sharper questions, hidden assumptions, analogies, and reframes for personal knowledge notes
 - **Fast** — defaults to OpenRouter's Groq provider with throughput-prioritized routing
 - **Bilingual** — automatically detects and continues in Chinese or English
 - **Lightweight** — 6KB plugin, no dependencies
@@ -30,6 +31,7 @@ Type naturally and get ghost text suggestions that appear inline. Press **Tab** 
 |---------|---------|-------------|
 | API base URL | `https://openrouter.ai/api/v1/chat/completions` | Any OpenAI-compatible chat completions endpoint |
 | Model | `openai/gpt-oss-120b:nitro` | Smart default via OpenRouter's Groq provider |
+| System prompt | Built-in heuristic prompt | Editable prompt that controls ghost text style and insight behavior |
 | Reasoning effort | `minimal` | Keeps reasoning models fast enough for inline autocomplete |
 | Hide reasoning | On | Excludes reasoning tokens from suggestion text |
 | Provider | `groq` | Forces OpenRouter's Groq provider |

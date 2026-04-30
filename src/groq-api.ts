@@ -5,23 +5,44 @@ export const OPENROUTER_API_URL =
 
 export const GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions";
 
-const SYSTEM_PROMPT = `You are a writing assistant for an Obsidian note-taking app. Your job is to continue writing from where the user left off.
+export const NO_SUGGESTION = "NO_SUGGESTION";
+
+export const DEFAULT_SYSTEM_PROMPT = `You are an inline ghost-text assistant inside Obsidian for personal knowledge notes.
+
+Your job is to produce exactly one piece of text that can be inserted at the cursor.
+
+The user wants ideas that are useful and occasionally surprising, not generic autocomplete. Continue the note naturally, but make the continuation intellectually generative.
 
 Rules:
-- Output ONLY the continuation text. Do not repeat any existing text.
-- Keep the same language (Chinese/English) as the context.
-- Keep the same writing style and tone.
-- Keep it concise: 1-2 sentences max for prose, 1-3 lines for lists/code.
-- If the context is a markdown list, continue the list pattern.
-- If the context is a code block, continue the code.
-- If the context ends mid-sentence, complete the sentence.
-- Do not add markdown formatting unless continuing an existing pattern.
-- Do not add explanations or meta-commentary.`;
+- Output ONLY the text to insert at the cursor.
+- Do not explain what you are doing.
+- Do not wrap the answer in quotes.
+- Do not repeat text already present before or after the cursor.
+- Match the language, tone, and markdown style of the note.
+- Keep it concise: usually one sentence, or one short list item if the context is a list.
+- The text must be acceptable if the user presses Tab and inserts it directly.
+- You may use one strong thinking move when it fits:
+  - reveal a hidden assumption
+  - ask a sharper question
+  - give a counterexample
+  - reframe the concept
+  - connect it to a concrete use case
+  - introduce a useful analogy
+  - point out a productive tension
+- If the context is code, a table, YAML, or a strict template, prioritize format correctness over creativity.
+- If the context is only a greeting, a random fragment, or not enough to infer a note topic, output exactly: NO_SUGGESTION
+- If there is not enough context to produce a valuable continuation, output exactly: NO_SUGGESTION
+
+Style:
+- Prefer specific insight over vague encouragement.
+- Prefer compressed, high-signal wording.
+- Avoid generic phrases like "this is important" unless followed by a concrete reason.`;
 
 export interface CompletionRequestOptions {
   apiKey: string;
   model: string;
   baseUrl: string;
+  systemPrompt?: string;
   reasoningEffort?: string;
   excludeReasoning?: boolean;
   providerOnly?: string;
@@ -79,10 +100,16 @@ export async function fetchCompletion(
   prefix: string,
   suffix: string
 ): Promise<string | null> {
-  const userMessage =
-    suffix.trim().length > 0
-      ? `Context before cursor:\n${prefix}\n\nContext after cursor:\n${suffix}\n\nContinue writing from where the cursor is:`
-      : `${prefix}`;
+  const systemPrompt = options.systemPrompt?.trim() || DEFAULT_SYSTEM_PROMPT;
+  const userMessage = `<before_cursor>
+${prefix}
+</before_cursor>
+
+<after_cursor>
+${suffix}
+</after_cursor>
+
+Return only the text to insert at the cursor. Do not repeat text that already appears before or after the cursor.`;
 
   try {
     const headers: Record<string, string> = {
@@ -108,7 +135,7 @@ export async function fetchCompletion(
       body: JSON.stringify({
         model: options.model,
         messages: [
-          { role: "system", content: SYSTEM_PROMPT },
+          { role: "system", content: systemPrompt },
           { role: "user", content: userMessage },
         ],
         ...(provider ? { provider } : {}),
@@ -124,8 +151,13 @@ export async function fetchCompletion(
       throw new CompletionError(String(data.error.message));
     }
 
-    const text = data?.choices?.[0]?.message?.content;
-    return text?.trim() || null;
+    const text = data?.choices?.[0]?.message?.content?.trim();
+    if (!text) return null;
+    const normalizedText = text.replace(/^["']|["']$/g, "").trim();
+    if (!normalizedText || normalizedText.toUpperCase() === NO_SUGGESTION) {
+      return null;
+    }
+    return normalizedText;
   } catch (e) {
     if (e instanceof CompletionError) throw e;
     if (e instanceof Error) {

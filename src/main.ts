@@ -4,6 +4,7 @@ import { inlineSuggestionExtension } from "./ghost-text";
 import {
   CompletionError,
   CompletionRequestOptions,
+  DEFAULT_SYSTEM_PROMPT,
   fetchCompletion,
   OPENROUTER_API_URL,
 } from "./groq-api";
@@ -12,6 +13,7 @@ interface AIAutocompleteSettings {
   apiKey: string;
   model: string;
   baseUrl: string;
+  systemPrompt: string;
   reasoningEffort: string;
   excludeReasoning: boolean;
   providerOnly: string;
@@ -27,6 +29,7 @@ const DEFAULT_SETTINGS: AIAutocompleteSettings = {
   apiKey: "",
   model: "openai/gpt-oss-120b:nitro",
   baseUrl: OPENROUTER_API_URL,
+  systemPrompt: DEFAULT_SYSTEM_PROMPT,
   reasoningEffort: "minimal",
   excludeReasoning: true,
   providerOnly: "groq",
@@ -105,6 +108,7 @@ export default class AIAutocompletePlugin extends Plugin {
       apiKey: this.settings.apiKey,
       model: this.settings.model,
       baseUrl: this.settings.baseUrl,
+      systemPrompt: this.settings.systemPrompt,
       reasoningEffort: this.settings.reasoningEffort,
       excludeReasoning: this.settings.excludeReasoning,
       providerOnly: this.settings.providerOnly,
@@ -124,7 +128,7 @@ export default class AIAutocompletePlugin extends Plugin {
     try {
       const result = await fetchCompletion(
         this.getCompletionOptions(),
-        "Reply with exactly: ok",
+        "个人知识笔记的真正价值在于",
         ""
       );
       new Notice(`AI Autocomplete: connected${result ? ` (${result})` : ""}`);
@@ -257,6 +261,33 @@ class AIAutocompleteSettingTab extends PluginSettingTab {
             this.plugin.settings.excludeReasoning = value;
             await this.plugin.saveSettings();
           })
+      );
+
+    new Setting(containerEl)
+      .setName("System prompt")
+      .setDesc("Controls the writing style and insight behavior of ghost text")
+      .addTextArea((text) => {
+        text.inputEl.rows = 14;
+        text.inputEl.cols = 64;
+        text
+          .setPlaceholder(DEFAULT_SYSTEM_PROMPT)
+          .setValue(this.plugin.settings.systemPrompt)
+          .onChange(async (value) => {
+            this.plugin.settings.systemPrompt = value;
+            await this.plugin.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("Reset prompt")
+      .setDesc("Restore the built-in heuristic prompt")
+      .addButton((button) =>
+        button.setButtonText("Reset").onClick(async () => {
+          this.plugin.settings.systemPrompt = DEFAULT_SYSTEM_PROMPT;
+          await this.plugin.saveSettings();
+          this.display();
+          new Notice("AI Autocomplete: prompt reset");
+        })
       );
 
     new Setting(containerEl)
