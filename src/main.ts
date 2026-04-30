@@ -75,7 +75,7 @@ export default class AIAutocompletePlugin extends Plugin {
         this.settings.enabled = !this.settings.enabled;
         void this.saveSettings();
         new Notice(
-          `AI Autocomplete: ${this.settings.enabled ? "ON" : "OFF"}`
+          `AI autocomplete: ${this.settings.enabled ? "on" : "off"}`
         );
       },
     });
@@ -121,7 +121,7 @@ export default class AIAutocompletePlugin extends Plugin {
 
   async testConnection() {
     if (!this.settings.apiKey) {
-      new Notice("AI Autocomplete: API key is empty");
+      new Notice("AI autocomplete: API key is empty");
       return;
     }
 
@@ -131,14 +131,14 @@ export default class AIAutocompletePlugin extends Plugin {
         "个人知识笔记的真正价值在于",
         ""
       );
-      new Notice(`AI Autocomplete: connected${result ? ` (${result})` : ""}`);
+      new Notice(`AI autocomplete: connected${result ? ` (${result})` : ""}`);
     } catch (e) {
       this.showCompletionError(e, true);
     }
   }
 
   showCompletionError(error: unknown, forceNotice = false) {
-    console.error("AI Autocomplete: completion error", error);
+    console.error("AI autocomplete: completion error", error);
 
     const now = Date.now();
     if (!forceNotice && now - this.lastErrorNoticeAt < 10000) return;
@@ -148,7 +148,7 @@ export default class AIAutocompletePlugin extends Plugin {
       error instanceof CompletionError || error instanceof Error
         ? error.message
         : "Unknown completion error";
-    new Notice(`AI Autocomplete failed: ${message}`);
+    new Notice(`AI autocomplete failed: ${message}`);
   }
 }
 
@@ -166,10 +166,10 @@ class AIAutocompleteSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("API key")
-      .setDesc("Use an OpenRouter key for the default Groq provider route")
+      .setDesc("Use this key for the default provider route")
       .addText((text) =>
         text
-          .setPlaceholder("sk-or-...")
+          .setPlaceholder("Enter your API key")
           .setValue(this.plugin.settings.apiKey)
           .onChange(async (value) => {
             this.plugin.settings.apiKey = value;
@@ -179,7 +179,7 @@ class AIAutocompleteSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("API base URL")
-      .setDesc("OpenAI-compatible chat completions endpoint")
+      .setDesc("Chat completions endpoint")
       .addText((text) =>
         text
           .setPlaceholder(OPENROUTER_API_URL)
@@ -207,7 +207,7 @@ class AIAutocompleteSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Model")
-      .setDesc("OpenRouter model slug")
+      .setDesc("Model slug")
       .addDropdown((dropdown) => {
         for (const [value, label] of Object.entries(modelOptions)) {
           dropdown.addOption(value, label);
@@ -225,7 +225,7 @@ class AIAutocompleteSettingTab extends PluginSettingTab {
       })
       .addText((text) =>
         text
-          .setPlaceholder("openai/gpt-oss-120b:nitro")
+          .setPlaceholder("Enter a model slug")
           .setValue(this.plugin.settings.model)
           .onChange(async (value) => {
             this.plugin.settings.model = value;
@@ -286,16 +286,16 @@ class AIAutocompleteSettingTab extends PluginSettingTab {
           this.plugin.settings.systemPrompt = DEFAULT_SYSTEM_PROMPT;
           await this.plugin.saveSettings();
           this.display();
-          new Notice("AI Autocomplete: prompt reset");
+          new Notice("AI autocomplete: prompt reset");
         })
       );
 
     new Setting(containerEl)
       .setName("Provider")
-      .setDesc("Use groq to force OpenRouter's Groq provider")
+      .setDesc("Use groq as the only provider")
       .addText((text) =>
         text
-          .setPlaceholder("groq")
+          .setPlaceholder("Provider name")
           .setValue(this.plugin.settings.providerOnly)
           .onChange(async (value) => {
             this.plugin.settings.providerOnly = value;
@@ -305,13 +305,13 @@ class AIAutocompleteSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Provider sort")
-      .setDesc("throughput prioritizes speed on OpenRouter")
+      .setDesc("Throughput prioritizes speed")
       .addDropdown((dropdown) =>
         dropdown
           .addOption("throughput", "Throughput")
           .addOption("latency", "Latency")
           .addOption("price", "Price")
-          .addOption("", "OpenRouter default")
+          .addOption("", "Default")
           .setValue(this.plugin.settings.providerSort)
           .onChange(async (value) => {
             this.plugin.settings.providerSort = value;
@@ -321,7 +321,7 @@ class AIAutocompleteSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Allow fallbacks")
-      .setDesc("Off means OpenRouter will only use the selected provider")
+      .setDesc("Off means only use the selected provider")
       .addToggle((toggle) =>
         toggle
           .setValue(this.plugin.settings.allowFallbacks)
@@ -333,7 +333,7 @@ class AIAutocompleteSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("HTTP referer")
-      .setDesc("Optional OpenRouter app attribution")
+      .setDesc("Optional app attribution")
       .addText((text) =>
         text
           .setPlaceholder("https://github.com/...")
@@ -346,10 +346,10 @@ class AIAutocompleteSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("App title")
-      .setDesc("Optional OpenRouter app attribution")
+      .setDesc("Optional app attribution")
       .addText((text) =>
         text
-          .setPlaceholder("AI Autocomplete")
+          .setPlaceholder("AI autocomplete")
           .setValue(this.plugin.settings.appTitle)
           .onChange(async (value) => {
             this.plugin.settings.appTitle = value;
