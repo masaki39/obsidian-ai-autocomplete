@@ -1,10 +1,11 @@
 {
   "name": "obsidian-ai-rewrite",
-  "version": "1.0.5",
+  "version": "0.0.1",
   "description": "Line-level AI rewriting for Obsidian (proofread, translate, custom modes) powered by local OpenAI-compatible models",
   "main": "main.js",
   "packageManager": "pnpm@11.6.0",
   "scripts": {
+    "preinstall": "npx only-allow pnpm",
     "dev": "node esbuild.config.mjs",
     "build": "node esbuild.config.mjs production"
   },

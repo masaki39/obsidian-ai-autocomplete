@@ -1,3 +1,7 @@
 node_modules/
 main.js
 data.json
+
+# pnpm-only project: never commit npm/yarn lockfiles
+package-lock.json
+yarn.lock
