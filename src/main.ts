@@ -258,39 +258,55 @@ class AIAutocompleteSettingTab extends PluginSettingTab {
       "openai/gpt-oss-20b:nitro": "OpenAI GPT OSS 20B via Groq (reasoning)",
       "llama-3.3-70b-versatile": "Groq direct: Llama 3.3 70B",
       "openai/gpt-oss-120b": "Groq direct: GPT OSS 120B",
-      gemma3: "Ollama: Gemma 3 (local)",
-      "gemma3:4b": "Ollama: Gemma 3 4B (local)",
-      "gemma3:12b": "Ollama: Gemma 3 12B (local)",
-      "gemma3:27b": "Ollama: Gemma 3 27B (local)",
     };
 
-    new Setting(containerEl)
-      .setName("Model")
-      .setDesc("Model slug")
-      .addDropdown((dropdown) => {
-        for (const [value, label] of Object.entries(modelOptions)) {
-          dropdown.addOption(value, label);
-        }
-        if (!modelOptions[this.plugin.settings.model]) {
-          dropdown.addOption(this.plugin.settings.model, "Custom current model");
-        }
-        return dropdown
-          .setValue(this.plugin.settings.model)
-          .onChange(async (value) => {
-            this.plugin.settings.model = value;
-            await this.plugin.saveSettings();
-            this.display();
-          });
-      })
-      .addText((text) =>
-        text
-          .setPlaceholder("Enter a model slug")
-          .setValue(this.plugin.settings.model)
-          .onChange(async (value) => {
-            this.plugin.settings.model = value;
-            await this.plugin.saveSettings();
-          })
-      );
+    const modelSetting = new Setting(containerEl).setName("Model");
+
+    if (this.plugin.settings.preset === "ollama") {
+      // Ollama exposes any locally pulled model, so a fixed dropdown does not
+      // make sense here — take a free-form tag instead.
+      modelSetting
+        .setDesc("Any model you have pulled (e.g. gemma3, gemma3:12b)")
+        .addText((text) =>
+          text
+            .setPlaceholder("gemma3")
+            .setValue(this.plugin.settings.model)
+            .onChange(async (value) => {
+              this.plugin.settings.model = value;
+              await this.plugin.saveSettings();
+            })
+        );
+    } else {
+      modelSetting
+        .setDesc("Model slug")
+        .addDropdown((dropdown) => {
+          for (const [value, label] of Object.entries(modelOptions)) {
+            dropdown.addOption(value, label);
+          }
+          if (!modelOptions[this.plugin.settings.model]) {
+            dropdown.addOption(
+              this.plugin.settings.model,
+              "Custom current model"
+            );
+          }
+          return dropdown
+            .setValue(this.plugin.settings.model)
+            .onChange(async (value) => {
+              this.plugin.settings.model = value;
+              await this.plugin.saveSettings();
+              this.display();
+            });
+        })
+        .addText((text) =>
+          text
+            .setPlaceholder("Enter a model slug")
+            .setValue(this.plugin.settings.model)
+            .onChange(async (value) => {
+              this.plugin.settings.model = value;
+              await this.plugin.saveSettings();
+            })
+        );
+    }
 
     new Setting(containerEl)
       .setName("Reasoning effort")
