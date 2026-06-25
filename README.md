@@ -1,61 +1,87 @@
 # AI Autocomplete
 
-AI inline writing completion for Obsidian, powered by OpenAI-compatible APIs. The default setup routes through [OpenRouter](https://openrouter.ai) to the Groq provider for fast inference.
+Local-first, **line-level** AI writing assistance for Obsidian, built for
+[Ollama](https://ollama.com). Instead of guessing what you'll write next, it
+rewrites the **current line** (or a selection) — proofread or translate — and
+shows the result as a ghost preview on the line below. Press **Tab** to apply,
+**Esc** to dismiss.
 
-Type naturally and get ghost text suggestions that appear inline. Press **Tab** or **→** to accept, **Esc** to dismiss.
-
-## Features
-
-- **Ghost text completion** — transparent suggestions appear at your cursor, like GitHub Copilot
-- **Context-aware** — reads text before and after cursor for coherent continuations
-- **Continuation-first** — picks up the current sentence naturally instead of inserting unrelated commentary
-- **Fast** — defaults to OpenRouter's Groq provider with throughput-prioritized routing
-- **Multilingual** — continues in the same language as your note (Japanese, Chinese, English, …)
-- **Lightweight** — 6KB plugin, no dependencies
-
-## Usage
-
-1. Install the plugin
-2. Go to Settings → AI Autocomplete → enter your OpenRouter API key
-3. Start writing — suggestions appear after a brief pause
-
-| Key | Action |
-|-----|--------|
-| Tab or → | Accept suggestion |
-| Esc | Dismiss suggestion |
-| Keep typing | Suggestion auto-dismisses |
-
-When no suggestion is showing, Tab and → behave normally (indent / move cursor), so they only conflict while ghost text is visible.
-
-## Use a local Ollama model (gemma3)
-
-You can run everything locally with [Ollama](https://ollama.com) — no API key, no cloud.
-
-1. Install Ollama, then pull the model: `ollama pull gemma3`
-2. Make sure Ollama is running (`ollama serve`; it usually starts automatically)
-3. In Settings → AI Autocomplete, set **Provider preset** to **Ollama (local)**
-
-The preset points the plugin at `http://localhost:11434/v1` with model `gemma3` and clears the cloud-only routing options. The API key field is ignored for Ollama. Switch the preset back to **OpenRouter (Groq)** at any time to restore the cloud defaults.
-
-## Settings
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| Provider preset | `OpenRouter (Groq)` | One-step switch between OpenRouter (Groq), Ollama (local), and Custom |
-| API base URL | `https://openrouter.ai/api/v1/chat/completions` | Any OpenAI-compatible chat completions endpoint |
-| Model | `openai/gpt-oss-120b:nitro` | Smart default via OpenRouter's Groq provider |
-| System prompt | Built-in continuation prompt | Editable prompt; defaults to natural same-language continuation. Click **Reset prompt** to restore it |
-| Reasoning effort | `minimal` | Keeps reasoning models fast enough for inline autocomplete |
-| Hide reasoning | On | Excludes reasoning tokens from suggestion text |
-| Provider | `groq` | Forces OpenRouter's Groq provider |
-| Provider sort | `throughput` | Prioritizes high token throughput |
-| Allow fallbacks | Off | Keeps requests on the selected provider |
-| Trigger delay | 800ms | How long to wait after typing before fetching a suggestion |
-| Enabled | On | Toggle via settings or command palette |
+Text correction is a much easier task for lightweight models (e.g. `gemma3`) than
+open-ended continuation, and on-demand triggering keeps your machine cool.
 
 ## How it works
 
-The plugin uses CodeMirror 6 extensions to render transparent "ghost text" at the cursor position. When you pause typing, it sends the surrounding context (up to 2000 chars before + 500 chars after cursor) to the configured API and displays the completion as inline ghost text.
+```
+your line (with a typo)        →  trigger (hotkey / on leave / while typing)
+今日わ会議がありした               →  ghost preview appears below
+今日は会議がありました              →  Tab applies it · Esc dismisses
+```
+
+For a line, the plugin strips the markdown prefix (indentation, `- `, `> `, `# `,
+`1. `, `- [ ] `…) so the model only sees prose, then re-applies the prefix to the
+result — bullets, quotes and headings are preserved. Blank lines are skipped.
+
+With an active **selection**, it rewrites the whole selection (multiple lines
+allowed) and replaces it on accept.
+
+## Modes
+
+Modes are just editable instructions. Two ship by default:
+
+| Mode | What it does |
+|------|--------------|
+| **Proofread** | Fix spelling, grammar, punctuation and typos, and polish the wording — same language and meaning |
+| **Translate** | Translate into your target language |
+
+- The active mode shows in the **status bar** — click it to pick another from a menu.
+- **Cycle mode** command switches to the next mode (bindable to a hotkey).
+- Each mode also gets its own command — search **"Apply"** in Settings → Hotkeys to bind e.g. `Apply Translate to current line or selection`. A per-mode hotkey switches mode *and* corrects in one press.
+- Add your own modes in Settings (name + prompt). Use `{targetLang}` in a prompt to make it use the Target language setting.
+
+## Triggers
+
+Choose in Settings → **Trigger**:
+
+| Trigger | Behavior | Best for |
+|---------|----------|----------|
+| **On demand** | Only when you run a command/hotkey | Lowest CPU, least noise (recommended) |
+| **When leaving a line** | Fires after you move off a line | Hands-off proofreading |
+| **While typing** | Fires after each pause | Most eager (warmest) |
+
+## Keys
+
+| Key | Action |
+|-----|--------|
+| Tab / → | Apply the suggestion |
+| Esc | Dismiss the suggestion |
+
+Accept/dismiss keys are configurable in Settings (space-separated). They only
+intercept the key while a preview is showing; otherwise the key behaves normally.
+
+### Key name reference
+
+Use CodeMirror key names. Combine a modifier and a key with `-`, and list
+multiple bindings separated by spaces.
+
+| Type | Names |
+|------|-------|
+| Named keys | `Tab` · `Enter` · `Escape` · `Backspace` · `Delete` · `Space` |
+| Arrows | `ArrowUp` · `ArrowDown` · `ArrowLeft` · `ArrowRight` |
+| Letters / digits | `a`–`z` · `0`–`9` · `F1`–`F12` |
+| Modifiers | `Mod-` (Cmd on macOS, Ctrl elsewhere — best for cross-platform) · `Ctrl-` · `Shift-` · `Alt-` · `Cmd-` / `Meta-` |
+
+Examples: `Tab ArrowRight` (accept on either) · `Escape` · `Ctrl-Space` ·
+`Mod-Enter` · `Shift-Tab`.
+
+## Setup
+
+1. Install [Ollama](https://ollama.com) and pull a model: `ollama pull gemma3`
+2. Make sure Ollama is running (`ollama serve`; usually automatic)
+3. Enable the plugin. It defaults to `http://localhost:11434/v1` with model
+   `gemma3` — change the **Model** in Settings if you pulled a different one.
+
+Any OpenAI-compatible local server (LM Studio, vLLM, …) works too: point **Base
+URL** at it in Settings.
 
 ## Development
 

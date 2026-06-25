@@ -1,116 +1,112 @@
-import { Plugin, PluginSettingTab, App, Setting, Notice } from "obsidian";
+import { Plugin, PluginSettingTab, App, Setting, Notice, Menu } from "obsidian";
 import { Extension } from "@codemirror/state";
-import { inlineSuggestionExtension } from "./ghost-text";
+import { EditorView } from "@codemirror/view";
+import {
+  CorrectionConfig,
+  TriggerMode,
+  correctionExtension,
+  triggerCurrent,
+} from "./ghost-text";
 import {
   CompletionError,
   CompletionRequestOptions,
-  DEFAULT_SYSTEM_PROMPT,
-  fetchCompletion,
+  fetchTransform,
   OLLAMA_API_URL,
-  OPENROUTER_API_URL,
-} from "./groq-api";
+} from "./api";
+import { DEFAULT_MODES, Mode, buildModePrompt } from "./modes";
 
 interface AIAutocompleteSettings {
-  preset: string;
-  apiKey: string;
-  model: string;
   baseUrl: string;
-  systemPrompt: string;
-  reasoningEffort: string;
-  excludeReasoning: boolean;
-  providerOnly: string;
-  providerSort: string;
-  allowFallbacks: boolean;
-  httpReferer: string;
-  appTitle: string;
+  model: string;
+  modes: Mode[];
+  activeModeId: string;
+  targetLang: string;
+  triggerMode: TriggerMode;
   delay: number;
+  acceptKeys: string;
+  dismissKeys: string;
   enabled: boolean;
 }
 
-// Values applied when a provider preset is selected. apiKey, systemPrompt and
-// other user-tuned fields are intentionally left untouched.
-type ProviderPreset = Pick<
-  AIAutocompleteSettings,
-  | "baseUrl"
-  | "model"
-  | "providerOnly"
-  | "providerSort"
-  | "allowFallbacks"
-  | "reasoningEffort"
->;
-
-const PROVIDER_PRESETS: Record<string, ProviderPreset> = {
-  openrouter: {
-    baseUrl: OPENROUTER_API_URL,
-    model: "openai/gpt-oss-120b:nitro",
-    providerOnly: "groq",
-    providerSort: "throughput",
-    allowFallbacks: false,
-    reasoningEffort: "minimal",
-  },
-  ollama: {
-    baseUrl: OLLAMA_API_URL,
-    model: "gemma3",
-    providerOnly: "",
-    providerSort: "",
-    allowFallbacks: true,
-    reasoningEffort: "",
-  },
-};
-
 const DEFAULT_SETTINGS: AIAutocompleteSettings = {
-  preset: "openrouter",
-  apiKey: "",
-  model: "openai/gpt-oss-120b:nitro",
-  baseUrl: OPENROUTER_API_URL,
-  systemPrompt: DEFAULT_SYSTEM_PROMPT,
-  reasoningEffort: "minimal",
-  excludeReasoning: true,
-  providerOnly: "groq",
-  providerSort: "throughput",
-  allowFallbacks: false,
-  httpReferer: "https://github.com/Leoyishou/obsidian-ai-autocomplete",
-  appTitle: "AI Autocomplete",
+  baseUrl: OLLAMA_API_URL,
+  model: "gemma3",
+  modes: [],
+  activeModeId: "proofread",
+  targetLang: "English",
+  triggerMode: "onDemand",
   delay: 800,
+  acceptKeys: "Tab ArrowRight",
+  dismissKeys: "Escape",
   enabled: true,
 };
 
 export default class AIAutocompletePlugin extends Plugin {
   settings: AIAutocompleteSettings = DEFAULT_SETTINGS;
+  config!: CorrectionConfig;
   private editorExtensions: Extension[] = [];
+  private statusBar: HTMLElement | null = null;
   private lastErrorNoticeAt = 0;
 
   async onload() {
     await this.loadSettings();
 
-    this.editorExtensions = inlineSuggestionExtension(
-      async (prefix, suffix) => {
-        if (!this.settings.enabled) return null;
-        try {
-          return await fetchCompletion(
-            this.getCompletionOptions(),
-            prefix,
-            suffix
-          );
-        } catch (e) {
-          this.showCompletionError(e);
-          return null;
-        }
-      },
-      this.settings.delay
-    );
+    this.config = {
+      correct: (content, multiline) =>
+        fetchTransform(
+          this.getCompletionOptions(),
+          buildModePrompt(this.getActiveMode(), this.settings.targetLang),
+          content,
+          multiline
+        ),
+      getTriggerMode: () => this.settings.triggerMode,
+      getDelay: () => this.settings.delay,
+      isEnabled: () => this.settings.enabled,
+      onError: (e) => this.showCompletionError(e),
+    };
 
+    this.editorExtensions = this.buildExtensions();
     this.registerEditorExtension(this.editorExtensions);
+
+    this.statusBar = this.addStatusBarItem();
+    this.statusBar.addClass("mod-clickable");
+    this.statusBar.addEventListener("click", (e) => this.showModeMenu(e));
+    this.updateStatusBar();
+
+    this.addCommand({
+      id: "correct-line",
+      name: "Correct current line or selection",
+      editorCallback: (editor) => {
+        const view = (editor as unknown as { cm?: EditorView }).cm;
+        if (view) void triggerCurrent(view, this.config);
+      },
+    });
+
+    for (const mode of this.settings.modes) {
+      this.addCommand({
+        id: `apply-${mode.id}`,
+        name: `Apply ${mode.name} to current line or selection`,
+        editorCallback: (editor) => {
+          void this.setActiveMode(mode.id);
+          const view = (editor as unknown as { cm?: EditorView }).cm;
+          if (view) void triggerCurrent(view, this.config);
+        },
+      });
+    }
+
+    this.addCommand({
+      id: "cycle-mode",
+      name: "Cycle mode",
+      callback: () => this.cycleMode(),
+    });
 
     this.addCommand({
       id: "toggle",
-      name: "Toggle auto-completion",
+      name: "Toggle suggestions",
       callback: () => {
         this.settings.enabled = !this.settings.enabled;
         void this.saveSettings();
-        new Notice(
-          `AI autocomplete: ${this.settings.enabled ? "on" : "off"}`
-        );
+        new Notice(`AI suggestions: ${this.settings.enabled ? "on" : "off"}`);
       },
     });
 
@@ -125,58 +121,103 @@ export default class AIAutocompletePlugin extends Plugin {
     this.addSettingTab(new AIAutocompleteSettingTab(this.app, this));
   }
 
+  buildExtensions(): Extension[] {
+    return correctionExtension(
+      this.config,
+      this.settings.acceptKeys,
+      this.settings.dismissKeys
+    );
+  }
+
+  // Rebuild the editor extension after the accept/dismiss keys change so the new
+  // bindings apply to open editors without a reload.
+  applyKeymapChange() {
+    this.editorExtensions.length = 0;
+    this.editorExtensions.push(...this.buildExtensions());
+    this.app.workspace.updateOptions();
+  }
+
   async loadSettings() {
     this.settings = Object.assign(
       {},
       DEFAULT_SETTINGS,
       await this.loadData()
     );
+    if (!Array.isArray(this.settings.modes) || this.settings.modes.length === 0) {
+      this.settings.modes = DEFAULT_MODES.map((m) => ({ ...m }));
+    }
+    if (!this.settings.modes.some((m) => m.id === this.settings.activeModeId)) {
+      this.settings.activeModeId = this.settings.modes[0].id;
+    }
   }
 
   async saveSettings() {
     await this.saveData(this.settings);
   }
 
-  async applyPreset(preset: string) {
-    this.settings.preset = preset;
-    const values = PROVIDER_PRESETS[preset];
-    if (values) {
-      Object.assign(this.settings, values);
-    }
+  getActiveMode(): Mode {
+    return (
+      this.settings.modes.find((m) => m.id === this.settings.activeModeId) ??
+      this.settings.modes[0]
+    );
+  }
+
+  async setActiveMode(id: string) {
+    this.settings.activeModeId = id;
     await this.saveSettings();
+    this.updateStatusBar();
+  }
+
+  cycleMode() {
+    const modes = this.settings.modes;
+    if (!modes.length) return;
+    const idx = modes.findIndex((m) => m.id === this.settings.activeModeId);
+    const next = modes[(idx + 1) % modes.length];
+    void this.setActiveMode(next.id);
+    new Notice(`AI mode: ${next.name}`);
+  }
+
+  showModeMenu(event: MouseEvent) {
+    const menu = new Menu();
+    for (const mode of this.settings.modes) {
+      menu.addItem((item) =>
+        item
+          .setTitle(mode.name)
+          .setChecked(mode.id === this.settings.activeModeId)
+          .onClick(() => void this.setActiveMode(mode.id))
+      );
+    }
+    menu.showAtMouseEvent(event);
+  }
+
+  updateStatusBar() {
+    if (!this.statusBar) return;
+    const mode = this.getActiveMode();
+    this.statusBar.setText(mode ? `AI: ${mode.name}` : "AI");
   }
 
   getCompletionOptions(): CompletionRequestOptions {
     return {
-      apiKey: this.settings.apiKey,
       model: this.settings.model,
       baseUrl: this.settings.baseUrl,
-      systemPrompt: this.settings.systemPrompt,
-      reasoningEffort: this.settings.reasoningEffort,
-      excludeReasoning: this.settings.excludeReasoning,
-      providerOnly: this.settings.providerOnly,
-      providerSort: this.settings.providerSort,
-      allowFallbacks: this.settings.allowFallbacks,
-      httpReferer: this.settings.httpReferer,
-      appTitle: this.settings.appTitle,
     };
   }
 
   async testConnection() {
     try {
-      const result = await fetchCompletion(
+      const result = await fetchTransform(
         this.getCompletionOptions(),
-        "个人知识笔记的真正价值在于",
-        ""
+        buildModePrompt(this.getActiveMode(), this.settings.targetLang),
+        "helo wrld"
       );
-      new Notice(`AI autocomplete: connected${result ? ` (${result})` : ""}`);
+      new Notice(`AI suggestions: connected${result ? ` (${result})` : ""}`);
     } catch (e) {
       this.showCompletionError(e, true);
     }
   }
 
   showCompletionError(error: unknown, forceNotice = false) {
-    console.error("AI autocomplete: completion error", error);
+    console.error("AI suggestions: completion error", error);
 
     const now = Date.now();
     if (!forceNotice && now - this.lastErrorNoticeAt < 10000) return;
@@ -186,7 +227,7 @@ export default class AIAutocompletePlugin extends Plugin {
       error instanceof CompletionError || error instanceof Error
         ? error.message
         : "Unknown completion error";
-    new Notice(`AI autocomplete failed: ${message}`);
+    new Notice(`AI suggestions failed: ${message}`);
   }
 }
 
@@ -202,239 +243,32 @@ class AIAutocompleteSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
+    this.renderBehaviorSettings(containerEl);
+    this.renderModeSettings(containerEl);
+    this.renderConnectionSettings(containerEl);
+  }
+
+  private renderBehaviorSettings(containerEl: HTMLElement): void {
     new Setting(containerEl)
-      .setName("Provider preset")
+      .setName("Trigger")
       .setDesc(
-        "Switch endpoint and model in one step. Choose custom to edit fields manually"
+        "On demand: only via hotkey/command. On leave: when you move off a line. While typing: after each pause"
       )
       .addDropdown((dropdown) =>
         dropdown
-          .addOption("openrouter", "OpenRouter (Groq)")
-          .addOption("ollama", "Ollama (local)")
-          .addOption("custom", "Custom")
-          .setValue(this.plugin.settings.preset)
+          .addOption("onDemand", "On demand (hotkey only)")
+          .addOption("onLeave", "When leaving a line")
+          .addOption("typing", "While typing")
+          .setValue(this.plugin.settings.triggerMode)
           .onChange(async (value) => {
-            await this.plugin.applyPreset(value);
-            this.display();
-          })
-      );
-
-    new Setting(containerEl)
-      .setName("API key")
-      .setDesc("Use this key for the default provider route. Not needed for Ollama")
-      .addText((text) =>
-        text
-          .setPlaceholder("Enter your API key")
-          .setValue(this.plugin.settings.apiKey)
-          .onChange(async (value) => {
-            this.plugin.settings.apiKey = value;
-            await this.plugin.saveSettings();
-          })
-      );
-
-    new Setting(containerEl)
-      .setName("API base URL")
-      .setDesc("Chat completions endpoint")
-      .addText((text) =>
-        text
-          .setPlaceholder(OPENROUTER_API_URL)
-          .setValue(this.plugin.settings.baseUrl)
-          .onChange(async (value) => {
-            this.plugin.settings.baseUrl = value;
-            await this.plugin.saveSettings();
-          })
-      );
-
-    const modelOptions: Record<string, string> = {
-      "openai/gpt-oss-120b:nitro":
-        "OpenAI GPT OSS 120B via Groq (smartest)",
-      "meta-llama/llama-3.3-70b-instruct:nitro":
-        "Llama 3.3 70B via Groq (stable)",
-      "moonshotai/kimi-k2-0905:nitro":
-        "Kimi K2 0905 via Groq (code/long context)",
-      "qwen/qwen3-32b:nitro": "Qwen3 32B via Groq (Chinese/reasoning)",
-      "meta-llama/llama-3.1-8b-instruct:nitro":
-        "Llama 3.1 8B via Groq (lowest latency)",
-      "openai/gpt-oss-20b:nitro": "OpenAI GPT OSS 20B via Groq (reasoning)",
-      "llama-3.3-70b-versatile": "Groq direct: Llama 3.3 70B",
-      "openai/gpt-oss-120b": "Groq direct: GPT OSS 120B",
-    };
-
-    const modelSetting = new Setting(containerEl).setName("Model");
-
-    if (this.plugin.settings.preset === "ollama") {
-      // Ollama exposes any locally pulled model, so a fixed dropdown does not
-      // make sense here — take a free-form tag instead.
-      modelSetting
-        .setDesc("Any model you have pulled (e.g. gemma3, gemma3:12b)")
-        .addText((text) =>
-          text
-            .setPlaceholder("gemma3")
-            .setValue(this.plugin.settings.model)
-            .onChange(async (value) => {
-              this.plugin.settings.model = value;
-              await this.plugin.saveSettings();
-            })
-        );
-    } else {
-      modelSetting
-        .setDesc("Model slug")
-        .addDropdown((dropdown) => {
-          for (const [value, label] of Object.entries(modelOptions)) {
-            dropdown.addOption(value, label);
-          }
-          if (!modelOptions[this.plugin.settings.model]) {
-            dropdown.addOption(
-              this.plugin.settings.model,
-              "Custom current model"
-            );
-          }
-          return dropdown
-            .setValue(this.plugin.settings.model)
-            .onChange(async (value) => {
-              this.plugin.settings.model = value;
-              await this.plugin.saveSettings();
-              this.display();
-            });
-        })
-        .addText((text) =>
-          text
-            .setPlaceholder("Enter a model slug")
-            .setValue(this.plugin.settings.model)
-            .onChange(async (value) => {
-              this.plugin.settings.model = value;
-              await this.plugin.saveSettings();
-            })
-        );
-    }
-
-    new Setting(containerEl)
-      .setName("Reasoning effort")
-      .setDesc("Use minimal/low for inline autocomplete to keep responses fast")
-      .addDropdown((dropdown) =>
-        dropdown
-          .addOption("minimal", "Minimal")
-          .addOption("low", "Low")
-          .addOption("medium", "Medium")
-          .addOption("high", "High")
-          .addOption("none", "None")
-          .addOption("", "API default")
-          .setValue(this.plugin.settings.reasoningEffort)
-          .onChange(async (value) => {
-            this.plugin.settings.reasoningEffort = value;
-            await this.plugin.saveSettings();
-          })
-      );
-
-    new Setting(containerEl)
-      .setName("Hide reasoning")
-      .setDesc("Keep reasoning tokens out of the returned suggestion text")
-      .addToggle((toggle) =>
-        toggle
-          .setValue(this.plugin.settings.excludeReasoning)
-          .onChange(async (value) => {
-            this.plugin.settings.excludeReasoning = value;
-            await this.plugin.saveSettings();
-          })
-      );
-
-    new Setting(containerEl)
-      .setName("System prompt")
-      .setDesc("Controls how ghost text continues your note")
-      .addTextArea((text) => {
-        text.inputEl.rows = 14;
-        text.inputEl.cols = 64;
-        text
-          .setPlaceholder(DEFAULT_SYSTEM_PROMPT)
-          .setValue(this.plugin.settings.systemPrompt)
-          .onChange(async (value) => {
-            this.plugin.settings.systemPrompt = value;
-            await this.plugin.saveSettings();
-          });
-      });
-
-    new Setting(containerEl)
-      .setName("Reset prompt")
-      .setDesc("Restore the built-in continuation prompt")
-      .addButton((button) =>
-        button.setButtonText("Reset").onClick(async () => {
-          this.plugin.settings.systemPrompt = DEFAULT_SYSTEM_PROMPT;
-          await this.plugin.saveSettings();
-          this.display();
-          new Notice("AI autocomplete: prompt reset");
-        })
-      );
-
-    new Setting(containerEl)
-      .setName("Provider")
-      .setDesc("Use groq as the only provider")
-      .addText((text) =>
-        text
-          .setPlaceholder("Provider name")
-          .setValue(this.plugin.settings.providerOnly)
-          .onChange(async (value) => {
-            this.plugin.settings.providerOnly = value;
-            await this.plugin.saveSettings();
-          })
-      );
-
-    new Setting(containerEl)
-      .setName("Provider sort")
-      .setDesc("Throughput prioritizes speed")
-      .addDropdown((dropdown) =>
-        dropdown
-          .addOption("throughput", "Throughput")
-          .addOption("latency", "Latency")
-          .addOption("price", "Price")
-          .addOption("", "Default")
-          .setValue(this.plugin.settings.providerSort)
-          .onChange(async (value) => {
-            this.plugin.settings.providerSort = value;
-            await this.plugin.saveSettings();
-          })
-      );
-
-    new Setting(containerEl)
-      .setName("Allow fallbacks")
-      .setDesc("Off means only use the selected provider")
-      .addToggle((toggle) =>
-        toggle
-          .setValue(this.plugin.settings.allowFallbacks)
-          .onChange(async (value) => {
-            this.plugin.settings.allowFallbacks = value;
-            await this.plugin.saveSettings();
-          })
-      );
-
-    new Setting(containerEl)
-      .setName("HTTP referer")
-      .setDesc("Optional app attribution")
-      .addText((text) =>
-        text
-          .setPlaceholder("Enter a referer URL")
-          .setValue(this.plugin.settings.httpReferer)
-          .onChange(async (value) => {
-            this.plugin.settings.httpReferer = value;
-            await this.plugin.saveSettings();
-          })
-      );
-
-    new Setting(containerEl)
-      .setName("App title")
-      .setDesc("Optional app attribution")
-      .addText((text) =>
-        text
-          .setPlaceholder("AI autocomplete")
-          .setValue(this.plugin.settings.appTitle)
-          .onChange(async (value) => {
-            this.plugin.settings.appTitle = value;
+            this.plugin.settings.triggerMode = value as TriggerMode;
             await this.plugin.saveSettings();
           })
       );
 
     new Setting(containerEl)
       .setName("Trigger delay (ms)")
-      .setDesc("How long to wait after typing before triggering completion")
+      .setDesc("Debounce before an automatic trigger fetches a suggestion")
       .addSlider((slider) =>
         slider
           .setLimits(300, 2000, 100)
@@ -447,13 +281,177 @@ class AIAutocompleteSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
+      .setName("Accept keys")
+      .setDesc(
+        createFragment((frag) => {
+          frag.appendText(
+            "Keys that apply the suggestion. Space-separated CodeMirror names, e.g. Tab ArrowRight, Ctrl-Space, Mod-Enter. "
+          );
+          frag.createEl("a", {
+            text: "Key name reference",
+            href: "https://github.com/masaki39/obsidian-ai-autocomplete#key-name-reference",
+          });
+        })
+      )
+      .addText((text) =>
+        text
+          .setPlaceholder("Tab ArrowRight")
+          .setValue(this.plugin.settings.acceptKeys)
+          .onChange(async (value) => {
+            this.plugin.settings.acceptKeys = value;
+            await this.plugin.saveSettings();
+            this.plugin.applyKeymapChange();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("Dismiss keys")
+      .setDesc("Keys that dismiss the suggestion. Same notation as accept keys, e.g. Escape")
+      .addText((text) =>
+        text
+          .setPlaceholder("Escape")
+          .setValue(this.plugin.settings.dismissKeys)
+          .onChange(async (value) => {
+            this.plugin.settings.dismissKeys = value;
+            await this.plugin.saveSettings();
+            this.plugin.applyKeymapChange();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("Target language")
+      .setDesc("Language used by Translate mode")
+      .addText((text) =>
+        text
+          .setPlaceholder("English")
+          .setValue(this.plugin.settings.targetLang)
+          .onChange(async (value) => {
+            this.plugin.settings.targetLang = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
       .setName("Enabled")
-      .setDesc("Toggle auto-completion on/off")
+      .setDesc("Toggle suggestions on/off")
       .addToggle((toggle) =>
         toggle
           .setValue(this.plugin.settings.enabled)
           .onChange(async (value) => {
             this.plugin.settings.enabled = value;
+            await this.plugin.saveSettings();
+          })
+      );
+  }
+
+  private renderModeSettings(containerEl: HTMLElement): void {
+    new Setting(containerEl)
+      .setName("Modes")
+      .setDesc(
+        "Each mode is an editable instruction. Switch via the status bar or the cycle command. Add a per-mode hotkey in Settings → Hotkeys (search 'Apply'). Adding or removing a mode takes effect after a reload"
+      )
+      .setHeading();
+
+    this.plugin.settings.modes.forEach((mode, index) => {
+      new Setting(containerEl)
+        .setName(`Mode ${index + 1}`)
+        .addText((text) =>
+          text
+            .setPlaceholder("Name")
+            .setValue(mode.name)
+            .onChange(async (value) => {
+              mode.name = value;
+              await this.plugin.saveSettings();
+              this.plugin.updateStatusBar();
+            })
+        )
+        .addExtraButton((button) =>
+          button
+            .setIcon("trash")
+            .setTooltip("Delete mode")
+            .onClick(async () => {
+              this.plugin.settings.modes.splice(index, 1);
+              if (this.plugin.settings.modes.length === 0) {
+                this.plugin.settings.modes = DEFAULT_MODES.map((m) => ({
+                  ...m,
+                }));
+              }
+              if (
+                !this.plugin.settings.modes.some(
+                  (m) => m.id === this.plugin.settings.activeModeId
+                )
+              ) {
+                await this.plugin.setActiveMode(
+                  this.plugin.settings.modes[0].id
+                );
+              }
+              await this.plugin.saveSettings();
+              this.display();
+            })
+        );
+
+      new Setting(containerEl)
+        .setClass("ai-mode-prompt")
+        .addTextArea((text) => {
+          text.inputEl.rows = 3;
+          text
+            .setValue(mode.prompt)
+            .onChange(async (value) => {
+              mode.prompt = value;
+              await this.plugin.saveSettings();
+            });
+        });
+    });
+
+    new Setting(containerEl)
+      .addButton((button) =>
+        button.setButtonText("Add mode").onClick(async () => {
+          this.plugin.settings.modes.push({
+            id: `mode-${Date.now()}`,
+            name: "New mode",
+            prompt:
+              "Rewrite the text. Output ONLY the result, with no quotes and no explanation.",
+          });
+          await this.plugin.saveSettings();
+          this.display();
+        })
+      )
+      .addButton((button) =>
+        button.setButtonText("Reset to defaults").onClick(async () => {
+          this.plugin.settings.modes = DEFAULT_MODES.map((m) => ({ ...m }));
+          await this.plugin.setActiveMode(this.plugin.settings.modes[0].id);
+          await this.plugin.saveSettings();
+          this.display();
+          new Notice("AI suggestions: modes reset");
+        })
+      );
+  }
+
+  private renderConnectionSettings(containerEl: HTMLElement): void {
+    new Setting(containerEl).setName("Ollama").setHeading();
+
+    new Setting(containerEl)
+      .setName("Base URL")
+      .setDesc("Ollama's OpenAI-compatible endpoint")
+      .addText((text) =>
+        text
+          .setPlaceholder(OLLAMA_API_URL)
+          .setValue(this.plugin.settings.baseUrl)
+          .onChange(async (value) => {
+            this.plugin.settings.baseUrl = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("Model")
+      .setDesc("Any model you have pulled (e.g. gemma3, gemma3:12b, qwen3:4b)")
+      .addText((text) =>
+        text
+          .setPlaceholder("gemma3")
+          .setValue(this.plugin.settings.model)
+          .onChange(async (value) => {
+            this.plugin.settings.model = value;
             await this.plugin.saveSettings();
           })
       );

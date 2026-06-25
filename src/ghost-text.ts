@@ -12,97 +12,116 @@ import {
   StateField,
   Text,
   Prec,
-  EditorState,
   EditorSelection,
+  Extension,
   TransactionSpec,
 } from "@codemirror/state";
+import { stripLinePrefix } from "./modes";
+
+export type TriggerMode = "onDemand" | "onLeave" | "typing";
+
+// What the engine needs from the host plugin. Kept as getters so settings
+// changes take effect without rebuilding the editor extension.
+export interface CorrectionConfig {
+  // Transform a piece of text. For line corrections the markdown prefix is
+  // already stripped; for a selection `multiline` is true. Returns the rewritten
+  // text (WITHOUT any re-applied prefix), or null to skip.
+  correct: (content: string, multiline: boolean) => Promise<string | null>;
+  getTriggerMode: () => TriggerMode;
+  getDelay: () => number;
+  isEnabled: () => boolean;
+  onError?: (e: unknown) => void;
+}
 
 // --- State Management ---
 
-export const InlineSuggestionEffect = StateEffect.define<{
-  text: string | null;
+// A suggestion is the full replacement for the line range [from, to].
+export const SuggestionEffect = StateEffect.define<{
+  text: string;
+  from: number;
+  to: number;
   doc: Text;
 }>();
 
 export const ClearSuggestionEffect = StateEffect.define<null>();
 
-export const InlineSuggestionState = StateField.define<{
-  suggestion: string | null;
-}>({
+interface SuggestionState {
+  text: string | null;
+  from: number;
+  to: number;
+}
+
+export const SuggestionField = StateField.define<SuggestionState>({
   create() {
-    return { suggestion: null };
+    return { text: null, from: 0, to: 0 };
   },
   update(value, tr) {
-    // Explicit clear
     for (const effect of tr.effects) {
       if (effect.is(ClearSuggestionEffect)) {
-        return { suggestion: null };
+        return { text: null, from: 0, to: 0 };
       }
     }
 
-    // New suggestion arrived
     for (const effect of tr.effects) {
-      if (effect.is(InlineSuggestionEffect)) {
-        // Only accept if doc hasn't changed since request
+      if (effect.is(SuggestionEffect)) {
+        // Only accept if the doc has not changed since the request was sent.
         if (tr.state.doc === effect.value.doc) {
-          return { suggestion: effect.value.text };
+          return {
+            text: effect.value.text,
+            from: effect.value.from,
+            to: effect.value.to,
+          };
         }
       }
     }
 
-    // Any doc change or cursor move clears suggestion
+    // Any later doc change or cursor move dismisses the preview.
     if (tr.docChanged || tr.selection) {
-      return { suggestion: null };
+      return { text: null, from: 0, to: 0 };
     }
 
     return value;
   },
 });
 
-// --- Ghost Text Widget ---
+// --- Ghost Preview Widget (rendered below the line) ---
 
-class GhostTextWidget extends WidgetType {
+class CorrectionWidget extends WidgetType {
   constructor(readonly text: string) {
     super();
   }
 
-  eq(other: GhostTextWidget) {
+  eq(other: CorrectionWidget) {
     return other.text === this.text;
   }
 
   toDOM() {
     const span = document.createElement("span");
-    span.className = "groq-copilot-ghost-text";
+    span.className = "ai-correction-ghost";
     span.textContent = this.text;
     return span;
   }
-
-  get lineBreaks() {
-    return this.text.split("\n").length - 1;
-  }
 }
 
-// --- Render Plugin ---
-
-const renderGhostTextPlugin = ViewPlugin.fromClass(
+const renderPreviewPlugin = ViewPlugin.fromClass(
   class {
     decorations: DecorationSet = Decoration.none;
 
     update(update: ViewUpdate) {
-      const suggestion =
-        update.state.field(InlineSuggestionState)?.suggestion;
-
-      if (!suggestion) {
+      const state = update.state.field(SuggestionField);
+      if (!state.text) {
         this.decorations = Decoration.none;
         return;
       }
 
-      const pos = update.state.selection.main.head;
+      // Anchor the preview at the end of the affected range's last line; CSS
+      // makes the widget render as its own block, so it appears below.
+      const line = update.state.doc.lineAt(state.to);
       const widget = Decoration.widget({
-        widget: new GhostTextWidget(suggestion),
+        widget: new CorrectionWidget(state.text),
         side: 1,
       });
-      this.decorations = Decoration.set([widget.range(pos)]);
+      this.decorations = Decoration.set([widget.range(line.to)]);
     }
   },
   {
@@ -110,115 +129,151 @@ const renderGhostTextPlugin = ViewPlugin.fromClass(
   }
 );
 
-// --- Key Bindings ---
+// --- Accept / Dismiss ---
 
-function insertCompletionText(
-  state: EditorState,
-  text: string,
-  from: number,
-  to: number
-): TransactionSpec {
-  return {
-    ...state.changeByRange((range) => {
-      if (range === state.selection.main) {
-        return {
-          changes: { from, to, insert: text },
-          range: EditorSelection.cursor(from + text.length),
-        };
-      }
-      return { range };
-    }),
-    userEvent: "input.complete",
-  };
-}
-
-// Accept the current suggestion. Returns false when none is showing so the key
-// falls through to its default behavior (Tab -> indent, ArrowRight -> move).
 function acceptSuggestion(view: EditorView): boolean {
-  const suggestion = view.state.field(InlineSuggestionState)?.suggestion;
-  if (!suggestion) return false;
+  const { text, from, to } = view.state.field(SuggestionField);
+  if (text == null) return false;
 
   const head = view.state.selection.main.head;
-  view.dispatch(insertCompletionText(view.state, suggestion, head, head));
+  const spec: TransactionSpec = {
+    changes: { from, to, insert: text },
+    userEvent: "input.complete",
+  };
+  // If the cursor sits on the line being corrected, drop it at the end of the
+  // new text so you can keep writing. If it is elsewhere (e.g. the "on leave"
+  // trigger already moved you to the next line), leave the selection out so
+  // CodeMirror maps it through the change and you stay where you are.
+  if (head >= from && head <= to) {
+    spec.selection = EditorSelection.cursor(from + text.length);
+  }
+  view.dispatch(spec);
   return true;
 }
 
-const ghostTextKeymap = Prec.highest(
-  keymap.of([
-    { key: "Tab", run: acceptSuggestion },
-    { key: "ArrowRight", run: acceptSuggestion },
-    {
-      key: "Escape",
-      run: (view: EditorView) => {
-        const suggestion =
-          view.state.field(InlineSuggestionState)?.suggestion;
-        if (!suggestion) return false;
+function dismissSuggestion(view: EditorView): boolean {
+  if (view.state.field(SuggestionField).text == null) return false;
+  view.dispatch({ effects: ClearSuggestionEffect.of(null) });
+  return true;
+}
 
-        view.dispatch({ effects: ClearSuggestionEffect.of(null) });
-        return true;
-      },
-    },
-  ])
-);
+// --- Configurable keymap ---
 
-// --- Fetch Plugin (triggers AI completion) ---
+// Parse a key spec, falling back to `fallback` when the spec is empty or only
+// whitespace/separators (so clearing the field never disables the action).
+function parseKeys(spec: string, fallback: string): string[] {
+  const keys = spec
+    .split(/[,\s]+/)
+    .map((k) => k.trim())
+    .filter(Boolean);
+  return keys.length ? keys : fallback.split(/[,\s]+/);
+}
 
-export type FetchFn = (
-  prefix: string,
-  suffix: string,
-  state: EditorState
-) => Promise<string | null>;
+function buildCorrectionKeymap(
+  acceptKeys: string,
+  dismissKeys: string
+): Extension {
+  const bindings = [
+    ...parseKeys(acceptKeys, "Tab").map((key) => ({
+      key,
+      run: acceptSuggestion,
+    })),
+    ...parseKeys(dismissKeys, "Escape").map((key) => ({
+      key,
+      run: dismissSuggestion,
+    })),
+  ];
+  return Prec.highest(keymap.of(bindings));
+}
 
-export function createFetchPlugin(fetchFn: FetchFn, delay: number) {
+// --- Core: request a correction for a range and show the preview ---
+
+interface Target {
+  from: number;
+  to: number;
+  content: string;
+  prefix: string;
+  multiline: boolean;
+}
+
+function lineTarget(view: EditorView, lineNumber: number): Target | null {
+  const doc = view.state.doc;
+  if (lineNumber < 1 || lineNumber > doc.lines) return null;
+  const line = doc.line(lineNumber);
+  const { prefix, content } = stripLinePrefix(line.text);
+  return { from: line.from, to: line.to, content, prefix, multiline: false };
+}
+
+async function showCorrection(
+  view: EditorView,
+  target: Target,
+  config: CorrectionConfig
+): Promise<void> {
+  if (!config.isEnabled()) return;
+  // Skip empty / whitespace-only ranges (e.g. blank lines).
+  if (target.content.trim().length === 0) return;
+
+  const doc = view.state.doc;
+  try {
+    const transformed = await config.correct(target.content, target.multiline);
+    if (transformed == null) return;
+    // Nothing meaningful changed — don't bother the user with a preview.
+    if (transformed.trim() === target.content.trim()) return;
+
+    view.dispatch({
+      effects: SuggestionEffect.of({
+        text: target.prefix + transformed,
+        from: target.from,
+        to: target.to,
+        doc,
+      }),
+    });
+  } catch (e) {
+    config.onError?.(e);
+  }
+}
+
+// --- Automatic trigger plugin (onLeave / typing) ---
+
+function createTriggerPlugin(config: CorrectionConfig) {
   return ViewPlugin.fromClass(
     class {
       private timer: ReturnType<typeof setTimeout> | null = null;
-      private abortController: AbortController | null = null;
+      private lastLine = -1;
 
       update(update: ViewUpdate) {
-        if (!update.docChanged) return;
+        const mode = config.getTriggerMode();
+        if (mode === "onDemand") return;
 
-        // Cancel pending request
+        const view = update.view;
+        const currentLine = update.state.doc.lineAt(
+          update.state.selection.main.head
+        ).number;
+
+        if (mode === "typing") {
+          if (!update.docChanged) return;
+          this.schedule(view, currentLine);
+          return;
+        }
+
+        // onLeave: correct the line the cursor just left.
+        if (!update.selectionSet && !update.docChanged) return;
+        if (currentLine === this.lastLine) return;
+        const leftLine = this.lastLine;
+        this.lastLine = currentLine;
+        if (leftLine !== -1) this.schedule(view, leftLine);
+      }
+
+      private schedule(view: EditorView, lineNumber: number) {
         if (this.timer) clearTimeout(this.timer);
-        if (this.abortController) this.abortController.abort();
-
         this.timer = setTimeout(() => {
-          void (async () => {
-            const doc = update.state.doc;
-            const cursor = update.state.selection.main.head;
-            const fullText = doc.toString();
-
-            const prefix = fullText.slice(Math.max(0, cursor - 2000), cursor);
-            const suffix = fullText.slice(cursor, cursor + 500);
-
-            // Don't trigger on empty or very short prefix
-            if (prefix.trim().length < 3) return;
-
-            this.abortController = new AbortController();
-
-            try {
-              const result = await fetchFn(prefix, suffix, update.state);
-              if (result && result.trim()) {
-                update.view.dispatch({
-                  effects: InlineSuggestionEffect.of({
-                    text: result,
-                    doc,
-                  }),
-                });
-              }
-            } catch (e) {
-              // Silently ignore aborted requests
-              if (e instanceof Error && e.name !== "AbortError") {
-                console.error("Groq Copilot: fetch error", e);
-              }
-            }
-          })();
-        }, delay);
+          const target = lineTarget(view, lineNumber);
+          if (target) void showCorrection(view, target, config);
+        }, config.getDelay());
       }
 
       destroy() {
         if (this.timer) clearTimeout(this.timer);
-        if (this.abortController) this.abortController.abort();
       }
     }
   );
@@ -226,11 +281,40 @@ export function createFetchPlugin(fetchFn: FetchFn, delay: number) {
 
 // --- Public API ---
 
-export function inlineSuggestionExtension(fetchFn: FetchFn, delay = 800) {
+// On-demand entry point used by commands. With a selection it rewrites the whole
+// selection (multi-line allowed); otherwise it corrects the current line.
+export function triggerCurrent(
+  view: EditorView,
+  config: CorrectionConfig
+): Promise<void> {
+  const sel = view.state.selection.main;
+  if (!sel.empty) {
+    return showCorrection(
+      view,
+      {
+        from: sel.from,
+        to: sel.to,
+        content: view.state.sliceDoc(sel.from, sel.to),
+        prefix: "",
+        multiline: true,
+      },
+      config
+    );
+  }
+  const lineNumber = view.state.doc.lineAt(sel.head).number;
+  const target = lineTarget(view, lineNumber);
+  return target ? showCorrection(view, target, config) : Promise.resolve();
+}
+
+export function correctionExtension(
+  config: CorrectionConfig,
+  acceptKeys: string,
+  dismissKeys: string
+): Extension[] {
   return [
-    InlineSuggestionState,
-    createFetchPlugin(fetchFn, delay),
-    renderGhostTextPlugin,
-    ghostTextKeymap,
+    SuggestionField,
+    createTriggerPlugin(config),
+    renderPreviewPlugin,
+    buildCorrectionKeymap(acceptKeys, dismissKeys),
   ];
 }
