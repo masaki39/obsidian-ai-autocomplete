@@ -31,4 +31,15 @@ export default tseslint.config(
 		},
 	},
 	...obsidianmd.configs.recommended,
+	{
+		rules: {
+			// Disabled: our UI copy is full of proper nouns and technical
+			// identifiers (Ollama, OpenAI, OpenRouter, LM Studio, model names like
+			// `gemma3`, the `sk-...` key prefix, CodeMirror key names such as
+			// `Tab ArrowRight`). The auto-suggestions mangle these (e.g.
+			// `gemma3` -> `Gemma3`, `Ollama` -> `ollama`), so the rule does more
+			// harm than good here.
+			'obsidianmd/ui/sentence-case': 'off',
+		},
+	},
 );

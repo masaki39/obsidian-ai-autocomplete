@@ -47,8 +47,17 @@ export function createLinkifier(candidates: LinkCandidate[]): Linkifier {
   // candidate can match inside a longer CJK token (e.g. a note "日本" linking
   // inside "日本語"); there is no boundary that both allows "日本" + particle and
   // rejects "日本" + "語", so we accept the occasional over-match here.
+  //
+  // The leading boundary is a captured group (start-of-string or a non-word
+  // char) rather than a lookbehind: lookbehind is unsupported on iOS < 16.4,
+  // and this plugin is not desktop-only. The captured char is re-emitted
+  // verbatim in the replacement. The trailing guard stays a (supported)
+  // lookahead so it isn't consumed, leaving the boundary char available to
+  // anchor an immediately following match.
   const matchRe = new RegExp(
-    "(?<![A-Za-z0-9_])(" + names.map(escapeRegExp).join("|") + ")(?![A-Za-z0-9_])",
+    "(^|[^A-Za-z0-9_])(" +
+      names.map(escapeRegExp).join("|") +
+      ")(?![A-Za-z0-9_])",
     "gi"
   );
 
@@ -57,16 +66,16 @@ export function createLinkifier(candidates: LinkCandidate[]): Linkifier {
     used: Set<string>,
     excludePath?: string
   ): string =>
-    segment.replace(matchRe, (m) => {
+    segment.replace(matchRe, (_full: string, pre: string, m: string) => {
       const target = byLower.get(m.toLowerCase());
-      if (target == null) return m;
-      if (excludePath && target === excludePath) return m;
+      if (target == null) return pre + m;
+      if (excludePath && target === excludePath) return pre + m;
       // First occurrence per note only.
-      if (used.has(target)) return m;
+      if (used.has(target)) return pre + m;
       used.add(target);
       // Preserve the original surface text; only add an alias pipe when the
       // case (or alias) differs from the target basename.
-      return m === target ? `[[${m}]]` : `[[${target}|${m}]]`;
+      return pre + (m === target ? `[[${m}]]` : `[[${target}|${m}]]`);
     });
 
   return {

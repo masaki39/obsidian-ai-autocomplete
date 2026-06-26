@@ -61,7 +61,7 @@ class CorrectionWidget extends WidgetType {
   }
 
   toDOM() {
-    const el = document.createElement("div");
+    const el = activeDocument.createElement("div");
     el.className = "ai-correction-ghost";
     el.textContent = this.text;
     return el;
@@ -235,7 +235,7 @@ async function showCorrection(
 function createTriggerPlugin(config: CorrectionConfig) {
   return ViewPlugin.fromClass(
     class {
-      private timer: ReturnType<typeof setTimeout> | null = null;
+      private timer: number | null = null;
       private lastLine = -1;
       private dirty = false;
       // A document position inside the line we're waiting to correct. Stored as
@@ -284,8 +284,8 @@ function createTriggerPlugin(config: CorrectionConfig) {
 
       private schedule(view: EditorView, pos: number) {
         this.pendingPos = pos;
-        if (this.timer) clearTimeout(this.timer);
-        this.timer = setTimeout(() => {
+        if (this.timer) window.clearTimeout(this.timer);
+        this.timer = window.setTimeout(() => {
           const p = this.pendingPos;
           this.pendingPos = null;
           if (p == null) return;
@@ -299,7 +299,7 @@ function createTriggerPlugin(config: CorrectionConfig) {
       }
 
       destroy() {
-        if (this.timer) clearTimeout(this.timer);
+        if (this.timer) window.clearTimeout(this.timer);
       }
     }
   );

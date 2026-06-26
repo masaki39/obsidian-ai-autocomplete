@@ -33,21 +33,31 @@ export class CompletionError extends Error {
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   if (!ms || ms <= 0) return promise;
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(
+    const timer = window.setTimeout(
       () => reject(new CompletionError(`Request timed out after ${ms} ms`)),
       ms
     );
     promise.then(
       (value) => {
-        clearTimeout(timer);
+        window.clearTimeout(timer);
         resolve(value);
       },
-      (error) => {
-        clearTimeout(timer);
-        reject(error);
+      (error: unknown) => {
+        window.clearTimeout(timer);
+        reject(
+          error instanceof Error ? error : new CompletionError(String(error))
+        );
       }
     );
   });
+}
+
+// Minimal shape of the OpenAI-compatible chat-completions response we read.
+// `requestUrl().json` is typed as `any`; narrowing through this keeps the
+// parsing below type-safe.
+interface ChatCompletionResponse {
+  error?: { message?: unknown };
+  choices?: { message?: { content?: unknown } }[];
 }
 
 function normalizeChatCompletionsUrl(baseUrl: string): string {
@@ -106,23 +116,23 @@ export async function fetchTransform(
 
     // The body may not be JSON (e.g. a proxy's HTML 502 page); `.json` throws on
     // parse failure, so guard it and fall back to the HTTP status.
-    let data: any = null;
+    let data: ChatCompletionResponse | null = null;
     try {
-      data = response.json;
+      data = response.json as ChatCompletionResponse;
     } catch {
       data = null;
     }
 
-    if (response.status >= 400 || data?.error?.message) {
+    const rawError = data?.error?.message;
+    const errorText = typeof rawError === "string" ? rawError.trim() : "";
+    if (response.status >= 400 || errorText) {
       throw new CompletionError(
-        data?.error?.message
-          ? String(data.error.message)
-          : `Request failed (HTTP ${response.status})`
+        errorText || `Request failed (HTTP ${response.status})`
       );
     }
 
     const text = data?.choices?.[0]?.message?.content;
-    if (!text) return null;
+    if (typeof text !== "string" || !text) return null;
     // Trim first so surrounding whitespace can't shield the wrapping quotes,
     // then strip a single leading/trailing quote and trim again.
     const normalized = text.trim().replace(/^["']|["']$/g, "").trim();

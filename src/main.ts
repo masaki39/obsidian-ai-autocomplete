@@ -223,11 +223,8 @@ export default class AIRewritePlugin extends Plugin {
   }
 
   async loadSettings() {
-    this.settings = Object.assign(
-      {},
-      DEFAULT_SETTINGS,
-      await this.loadData()
-    );
+    const stored = (await this.loadData()) as Partial<AIRewriteSettings> | null;
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, stored);
     if (!Array.isArray(this.settings.modes) || this.settings.modes.length === 0) {
       this.settings.modes = DEFAULT_MODES.map((m) => ({ ...m }));
     }
@@ -393,6 +390,12 @@ class AIRewriteSettingTab extends PluginSettingTab {
   }
 
   display(): void {
+    this.render();
+  }
+
+  // The actual rendering, kept separate so internal re-renders (adding/removing
+  // a mode) can call it without going through the deprecated `display()`.
+  private render(): void {
     const { containerEl } = this;
     containerEl.empty();
 
@@ -426,7 +429,6 @@ class AIRewriteSettingTab extends PluginSettingTab {
         slider
           .setLimits(300, 2000, 100)
           .setValue(this.plugin.settings.delay)
-          .setDynamicTooltip()
           .onChange(async (value) => {
             this.plugin.settings.delay = value;
             await this.plugin.saveSettings();
@@ -442,7 +444,6 @@ class AIRewriteSettingTab extends PluginSettingTab {
         slider
           .setLimits(5, 120, 5)
           .setValue(this.plugin.settings.timeout)
-          .setDynamicTooltip()
           .onChange(async (value) => {
             this.plugin.settings.timeout = value;
             await this.plugin.saveSettings();
@@ -569,7 +570,7 @@ class AIRewriteSettingTab extends PluginSettingTab {
                 );
               }
               await this.plugin.saveSettings();
-              this.display();
+              this.render();
             })
         );
 
@@ -598,7 +599,7 @@ class AIRewriteSettingTab extends PluginSettingTab {
               "Rewrite the text. Output ONLY the result, with no quotes and no explanation.",
           });
           await this.plugin.saveSettings();
-          this.display();
+          this.render();
         })
       )
       .addButton((button) =>
@@ -606,7 +607,7 @@ class AIRewriteSettingTab extends PluginSettingTab {
           this.plugin.settings.modes = DEFAULT_MODES.map((m) => ({ ...m }));
           await this.plugin.setActiveMode(this.plugin.settings.modes[0].id);
           await this.plugin.saveSettings();
-          this.display();
+          this.render();
           new Notice("AI suggestions: modes reset");
         })
       );

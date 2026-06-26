@@ -10,6 +10,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # Required to generate artifact attestations (build provenance) for the
+      # release assets, so users can cryptographically verify they were built
+      # from this repository.
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
 
@@ -26,6 +31,14 @@ jobs:
         run: |
           pnpm install
           pnpm run build
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            main.js
+            manifest.json
+            styles.css
 
       - name: Create release
         env:
